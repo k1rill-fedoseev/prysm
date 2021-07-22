@@ -27,7 +27,8 @@ import (
 )
 
 var (
-	depositEventSignature = hashutil.HashKeccak256([]byte("DepositEvent(bytes,bytes,bytes,bytes,bytes)"))
+	depositEventSignature             = hashutil.HashKeccak256([]byte("DepositEvent(bytes,bytes,bytes,bytes,bytes)"))
+	depositConfirmationEventSignature = hashutil.HashKeccak256([]byte("")) // TODO
 )
 
 const eth1DataSavingInterval = 100
@@ -53,6 +54,7 @@ func (s *Service) ProcessETH1Block(ctx context.Context, blkNum *big.Int) error {
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{
 			s.cfg.DepositContract,
+			s.cfg.SecondaryDepositContract,
 		},
 		FromBlock: blkNum,
 		ToBlock:   blkNum,
@@ -84,16 +86,32 @@ func (s *Service) ProcessLog(ctx context.Context, depositLog gethTypes.Log) erro
 	s.processingLock.RLock()
 	defer s.processingLock.RUnlock()
 	// Process logs according to their event signature.
-	if depositLog.Topics[0] == depositEventSignature {
-		if err := s.ProcessDepositLog(ctx, depositLog); err != nil {
-			return errors.Wrap(err, "Could not process deposit log")
+	if depositLog.Address.String() == s.cfg.DepositContract.String() {
+		if depositLog.Topics[0] == depositEventSignature {
+			if err := s.ProcessDepositLog(ctx, depositLog); err != nil {
+				return errors.Wrap(err, "Could not process deposit log")
+			}
+			return nil
+		} else if depositLog.Topics[0] == depositConfirmationEventSignature {
+			if err := s.ProcessDepositConfirmationLog(ctx, depositLog); err != nil {
+				return errors.Wrap(err, "Could not process deposit confirmation log")
+			}
+			return nil
 		}
-		if s.lastReceivedMerkleIndex%eth1DataSavingInterval == 0 {
-			return s.savePowchainData(ctx)
+		log.WithField("signature", fmt.Sprintf("%#x", depositLog.Topics[0])).Debug("Not a valid event signature")
+	} else if depositLog.Address.String() == s.cfg.SecondaryDepositContract.String() {
+		if depositLog.Topics[0] == depositEventSignature {
+			if err := s.ProcessSecondaryDepositLog(ctx, depositLog); err != nil {
+				return errors.Wrap(err, "Could not process secondary deposit log")
+			}
+			return nil
 		}
-		return nil
+		log.WithField("signature", fmt.Sprintf("%#x", depositLog.Topics[0])).Debug("Not a valid event signature")
 	}
-	log.WithField("signature", fmt.Sprintf("%#x", depositLog.Topics[0])).Debug("Not a valid event signature")
+
+	if s.lastReceivedMerkleIndex%eth1DataSavingInterval == 0 || s.lastReceivedSecondaryIndex%eth1DataSavingInterval == 0 {
+		return s.savePowchainData(ctx)
+	}
 	return nil
 }
 
@@ -198,6 +216,175 @@ func (s *Service) ProcessDepositLog(ctx context.Context, depositLog gethTypes.Lo
 			"merkleTreeIndex": index,
 		}).Info("Invalid deposit registered in deposit contract")
 	}
+	return nil
+}
+
+// ProcessDepositConfirmationLog processes the log which had been received from
+// the ETH1.0 chain by trying to ascertain which participant deposited
+// in the contract.
+func (s *Service) ProcessDepositConfirmationLog(ctx context.Context, depositLog gethTypes.Log) error {
+	confirmingIndexRaw, merkleTreeIndex, err := contracts.UnpackDepositConfirmationLogData(depositLog.Data)
+	if err != nil {
+		return errors.Wrap(err, "Could not unpack log")
+	}
+
+	// If we have already seen this Merkle index, skip processing the log.
+	// This can happen sometimes when we receive the same log twice from the
+	// ETH1.0 network, and prevents us from updating our trie
+	// with the same log twice, causing an inconsistent state root.
+	index := int64(binary.LittleEndian.Uint64(merkleTreeIndex))
+	confirmingIndex := int64(binary.LittleEndian.Uint64(confirmingIndexRaw))
+	if index <= s.lastReceivedMerkleIndex {
+		return nil
+	}
+
+	if index != s.lastReceivedMerkleIndex+1 {
+		missedDepositLogsCount.Inc()
+		return errors.Errorf("received incorrect merkle index: wanted %d but got %d", s.lastReceivedMerkleIndex+1, index)
+	}
+	s.lastReceivedMerkleIndex = index
+
+	dep := s.cfg.DepositCache.SecondaryDepositByIndex(ctx, confirmingIndex)
+	var depositData *ethpb.Deposit_Data
+	if confirmingIndex > s.lastReceivedSecondaryIndex || dep == nil || dep.Data.Amount == 0 {
+		depositData = &ethpb.Deposit_Data{
+			Amount:                0,
+			PublicKey:             []byte{},
+			Signature:             []byte{},
+			WithdrawalCredentials: []byte{},
+		}
+	} else {
+		// We then decode the deposit input in order to create a deposit object
+		// we can store in our persistent DB.
+		depositData = &ethpb.Deposit_Data{
+			Amount:                dep.Data.Amount,
+			PublicKey:             dep.Data.PublicKey,
+			Signature:             dep.Data.Signature, // TODO replace confirmation message signature
+			WithdrawalCredentials: dep.Data.WithdrawalCredentials,
+		}
+		dep.Data.Amount = 0// TODO test mutability
+	}
+
+	depositHash, err := depositData.HashTreeRoot()
+	if err != nil {
+		return errors.Wrap(err, "Unable to determine hashed value of deposit")
+	}
+
+	// Defensive check to validate incoming index.
+	if s.depositTrie.NumOfItems() != int(index) {
+		return errors.Errorf("invalid deposit index received: wanted %d but got %d", s.depositTrie.NumOfItems(), index)
+	}
+	s.depositTrie.Insert(depositHash[:], int(index))
+
+	proof, err := s.depositTrie.MerkleProof(int(index))
+	if err != nil {
+		return errors.Wrap(err, "Unable to generate merkle proof for deposit")
+	}
+
+	deposit := &ethpb.Deposit{
+		Data:  depositData,
+		Proof: proof,
+	}
+
+	// We always store all historical deposits in the DB.
+	err = s.cfg.DepositCache.InsertDeposit(ctx, deposit, depositLog.BlockNumber, index, s.depositTrie.Root())
+	if err != nil {
+		return errors.Wrap(err, "unable to insert deposit into cache")
+	}
+	validData := true
+	if !s.chainStartData.Chainstarted {
+		s.chainStartData.ChainstartDeposits = append(s.chainStartData.ChainstartDeposits, deposit)
+		root := s.depositTrie.Root()
+		eth1Data := &ethpb.Eth1Data{
+			DepositRoot:  root[:],
+			DepositCount: uint64(len(s.chainStartData.ChainstartDeposits)),
+		}
+		if err := s.processDeposit(ctx, eth1Data, deposit); err != nil {
+			log.Errorf("Invalid deposit processed: %v", err)
+			validData = false
+		}
+	} else {
+		s.cfg.DepositCache.InsertPendingDeposit(ctx, deposit, depositLog.BlockNumber, index, s.depositTrie.Root())
+	}
+	if validData {
+		log.WithFields(logrus.Fields{
+			"eth1Block":       depositLog.BlockNumber,
+			"publicKey":       fmt.Sprintf("%#x", depositData.PublicKey),
+			"merkleTreeIndex": index,
+		}).Debug("Deposit registered from deposit contract")
+		validDepositsCount.Inc()
+		// Notify users what is going on, from time to time.
+		if !s.chainStartData.Chainstarted {
+			deposits := len(s.chainStartData.ChainstartDeposits)
+			if deposits%512 == 0 {
+				valCount, err := helpers.ActiveValidatorCount(s.preGenesisState, 0)
+				if err != nil {
+					log.WithError(err).Error("Could not determine active validator count from pre genesis state")
+				}
+				log.WithFields(logrus.Fields{
+					"deposits":          deposits,
+					"genesisValidators": valCount,
+				}).Info("Processing deposits from Ethereum 1 chain")
+			}
+		}
+	} else {
+		log.WithFields(logrus.Fields{
+			"eth1Block":       depositLog.BlockHash.Hex(),
+			"eth1Tx":          depositLog.TxHash.Hex(),
+			"merkleTreeIndex": index,
+		}).Info("Invalid deposit registered in deposit contract")
+	}
+	return nil
+}
+
+// ProcessSecondaryDepositLog processes the log which had been received from
+// the ETH1.0 chain by trying to ascertain which participant deposited
+// in the secondary contract.
+func (s *Service) ProcessSecondaryDepositLog(ctx context.Context, depositLog gethTypes.Log) error {
+	pubkey, withdrawalCredentials, amount, signature, merkleTreeIndex, err := contracts.UnpackDepositLogData(depositLog.Data)
+	if err != nil {
+		return errors.Wrap(err, "Could not unpack log")
+	}
+	// If we have already seen this Merkle index, skip processing the log.
+	// This can happen sometimes when we receive the same log twice from the
+	// ETH1.0 network, and prevents us from updating our trie
+	// with the same log twice, causing an inconsistent state root.
+	index := int64(binary.LittleEndian.Uint64(merkleTreeIndex))
+	if index <= s.lastReceivedSecondaryIndex {
+		return nil
+	}
+
+	if index != s.lastReceivedSecondaryIndex+1 {
+		missedDepositLogsCount.Inc()
+		return errors.Errorf("received incorrect merkle index: wanted %d but got %d", s.lastReceivedMerkleIndex+1, index)
+	}
+	s.lastReceivedSecondaryIndex = index
+
+	// We then decode the deposit input in order to create a deposit object
+	// we can store in our persistent DB.
+	depositData := &ethpb.Deposit_Data{
+		Amount:                bytesutil.FromBytes8(amount),
+		PublicKey:             pubkey,
+		Signature:             signature,
+		WithdrawalCredentials: withdrawalCredentials,
+	}
+
+	deposit := &ethpb.Deposit{
+		Data:  depositData,
+		Proof: nil,
+	}
+
+	// We always store all historical deposits in the DB.
+	err = s.cfg.DepositCache.InsertSecondaryDeposit(ctx, deposit, depositLog.BlockNumber, index, s.depositTrie.Root())
+	if err != nil {
+		return errors.Wrap(err, "unable to insert deposit into cache")
+	}
+	log.WithFields(logrus.Fields{
+		"eth1Block":       depositLog.BlockNumber,
+		"publicKey":       fmt.Sprintf("%#x", depositData.PublicKey),
+		"merkleTreeIndex": index,
+	}).Debug("Deposit registered from deposit contract")
+	validDepositsCount.Inc()
 	return nil
 }
 

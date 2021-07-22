@@ -127,39 +127,41 @@ type RPCClient interface {
 // Validator Registration Contract on the ETH1.0 chain to kick off the beacon
 // chain's validator registration process.
 type Service struct {
-	connectedETH1           bool
-	isRunning               bool
-	processingLock          sync.RWMutex
-	cfg                     *Web3ServiceConfig
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	headTicker              *time.Ticker
-	httpEndpoints           []httputils.Endpoint
-	currHttpEndpoint        httputils.Endpoint
-	httpLogger              bind.ContractFilterer
-	eth1DataFetcher         RPCDataFetcher
-	rpcClient               RPCClient
-	headerCache             *headerCache // cache to store block hash/block height.
-	latestEth1Data          *protodb.LatestETH1Data
-	depositContractCaller   *contracts.DepositContractCaller
-	depositTrie             *trieutil.SparseMerkleTrie
-	chainStartData          *protodb.ChainStartData
-	lastReceivedMerkleIndex int64 // Keeps track of the last received index to prevent log spam.
-	runError                error
-	preGenesisState         iface.BeaconState
-	bsUpdater               BeaconNodeStatsUpdater
+	connectedETH1              bool
+	isRunning                  bool
+	processingLock             sync.RWMutex
+	cfg                        *Web3ServiceConfig
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	headTicker                 *time.Ticker
+	httpEndpoints              []httputils.Endpoint
+	currHttpEndpoint           httputils.Endpoint
+	httpLogger                 bind.ContractFilterer
+	eth1DataFetcher            RPCDataFetcher
+	rpcClient                  RPCClient
+	headerCache                *headerCache // cache to store block hash/block height.
+	latestEth1Data             *protodb.LatestETH1Data
+	depositContractCaller      *contracts.DepositContractCaller
+	depositTrie                *trieutil.SparseMerkleTrie
+	chainStartData             *protodb.ChainStartData
+	lastReceivedMerkleIndex    int64 // Keeps track of the last received index to prevent log spam.
+	lastReceivedSecondaryIndex int64
+	runError                   error
+	preGenesisState            iface.BeaconState
+	bsUpdater                  BeaconNodeStatsUpdater
 }
 
 // Web3ServiceConfig defines a config struct for web3 service to use through its life cycle.
 type Web3ServiceConfig struct {
-	HttpEndpoints          []string
-	DepositContract        common.Address
-	BeaconDB               db.HeadAccessDatabase
-	DepositCache           *depositcache.DepositCache
-	StateNotifier          statefeed.Notifier
-	StateGen               *stategen.State
-	Eth1HeaderReqLimit     uint64
-	BeaconNodeStatsUpdater BeaconNodeStatsUpdater
+	HttpEndpoints            []string
+	DepositContract          common.Address
+	SecondaryDepositContract common.Address
+	BeaconDB                 db.HeadAccessDatabase
+	DepositCache             *depositcache.DepositCache
+	StateNotifier            statefeed.Notifier
+	StateGen                 *stategen.State
+	Eth1HeaderReqLimit       uint64
+	BeaconNodeStatsUpdater   BeaconNodeStatsUpdater
 }
 
 // NewService sets up a new instance with an ethclient when
@@ -587,6 +589,7 @@ func (s *Service) initDepositCaches(ctx context.Context, ctrs []*protodb.Deposit
 	if len(ctrs) == 0 {
 		return nil
 	}
+	// TODO insert secondary deposits from db
 	s.cfg.DepositCache.InsertDepositContainers(ctx, ctrs)
 	if !s.chainStartData.Chainstarted {
 		// do not add to pending cache

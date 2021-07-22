@@ -60,9 +60,10 @@ type BeaconChainConfig struct {
 	SecondsPerETH1Block              uint64      `yaml:"SECONDS_PER_ETH1_BLOCK" spec:"true"`              // SecondsPerETH1Block is the approximate time for a single eth1 block to be produced.
 
 	// Ethereum PoW parameters.
-	DepositChainID         uint64 `yaml:"DEPOSIT_CHAIN_ID" spec:"true"`         // DepositChainID of the eth1 network. This used for replay protection.
-	DepositNetworkID       uint64 `yaml:"DEPOSIT_NETWORK_ID" spec:"true"`       // DepositNetworkID of the eth1 network. This used for replay protection.
-	DepositContractAddress string `yaml:"DEPOSIT_CONTRACT_ADDRESS" spec:"true"` // DepositContractAddress is the address of the deposit contract.
+	DepositChainID                  uint64 `yaml:"DEPOSIT_CHAIN_ID" spec:"true"`                   // DepositChainID of the eth1 network. This used for replay protection.
+	DepositNetworkID                uint64 `yaml:"DEPOSIT_NETWORK_ID" spec:"true"`                 // DepositNetworkID of the eth1 network. This used for replay protection.
+	DepositContractAddress          string `yaml:"DEPOSIT_CONTRACT_ADDRESS" spec:"true"`           // DepositContractAddress is the address of the deposit contract.
+	SecondaryDepositContractAddress string `yaml:"SECONDARY_DEPOSIT_CONTRACT_ADDRESS" spec:"true"` // SecondaryDepositContractAddress is the address of the secondary deposit contract.
 
 	// Validator parameters.
 	RandomSubnetsPerValidator         uint64 `yaml:"RANDOM_SUBNETS_PER_VALIDATOR" spec:"true"`          // RandomSubnetsPerValidator specifies the amount of subnets a validator has to be subscribed to at one time.

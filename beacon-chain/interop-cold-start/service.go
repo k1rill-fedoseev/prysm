@@ -161,6 +161,10 @@ func (s *Service) NonFinalizedDeposits(_ context.Context, _ *big.Int) []*ethpb.D
 	return []*ethpb.Deposit{}
 }
 
+func (s *Service) SecondaryDepositByIndex(ctx context.Context, index int64) *ethpb.Deposit {
+	return &ethpb.Deposit{}
+}
+
 func (s *Service) saveGenesisState(ctx context.Context, genesisState iface.BeaconState) error {
 	if err := s.cfg.BeaconDB.SaveGenesisData(ctx, genesisState); err != nil {
 		return err

@@ -25,6 +25,12 @@ var (
 		Usage: "Deposit contract address. Beacon chain node will listen logs coming from the deposit contract to determine when validator is eligible to participate.",
 		Value: params.BeaconConfig().DepositContractAddress,
 	}
+	// SecondaryDepositContractFlag defines a flag for the secondary deposit contract address.
+	SecondaryDepositContractFlag = &cli.StringFlag{
+		Name:  "secondary-deposit-contract",
+		Usage: "Secondary deposit contract address. Beacon chain node will listen logs coming from the deposit contract to confirm existing deposits.",
+		Value: params.BeaconConfig().SecondaryDepositContractAddress,
+	}
 	// RPCHost defines the host on which the RPC server should listen.
 	RPCHost = &cli.StringFlag{
 		Name:  "rpc-host",

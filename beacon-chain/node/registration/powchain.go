@@ -10,10 +10,20 @@ import (
 )
 
 // PowchainPreregistration prepares data for powchain.Service's registration.
-func PowchainPreregistration(cliCtx *cli.Context) (depositContractAddress string, endpoints []string, err error) {
+func PowchainPreregistration(cliCtx *cli.Context) (
+	depositContractAddress string,
+	secondaryDepositContractAddress string,
+	endpoints []string,
+	err error,
+) {
 	depositContractAddress, err = DepositContractAddress()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
+	}
+
+	secondaryDepositContractAddress, err = SecondaryDepositContractAddress()
+	if err != nil {
+		return "", "", nil, err
 	}
 
 	if cliCtx.String(flags.HTTPWeb3ProviderFlag.Name) == "" && len(cliCtx.StringSlice(flags.FallbackWeb3ProviderFlag.Name)) == 0 {
@@ -35,6 +45,20 @@ func DepositContractAddress() (string, error) {
 	address := params.BeaconConfig().DepositContractAddress
 	if address == "" {
 		return "", errors.New("valid deposit contract is required")
+	}
+
+	if !common.IsHexAddress(address) {
+		return "", errors.New("invalid deposit contract address given: " + address)
+	}
+
+	return address, nil
+}
+
+// SecondaryDepositContractAddress returns the address of the secondary deposit contract.
+func SecondaryDepositContractAddress() (string, error) {
+	address := params.BeaconConfig().SecondaryDepositContractAddress
+	if address == "" {
+		address = "0x0000000000000000000000000000000000000000"
 	}
 
 	if !common.IsHexAddress(address) {

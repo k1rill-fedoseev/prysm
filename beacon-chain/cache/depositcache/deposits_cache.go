@@ -38,6 +38,8 @@ type DepositFetcher interface {
 	DepositsNumberAndRootAtHeight(ctx context.Context, blockHeight *big.Int) (uint64, [32]byte)
 	FinalizedDeposits(ctx context.Context) *FinalizedDeposits
 	NonFinalizedDeposits(ctx context.Context, untilBlk *big.Int) []*ethpb.Deposit
+
+	SecondaryDepositByIndex(ctx context.Context, index int64) *ethpb.Deposit
 }
 
 // FinalizedDeposits stores the trie of deposits that have been included
@@ -53,6 +55,7 @@ type DepositCache struct {
 	// Beacon chain deposits in memory.
 	pendingDeposits   []*dbpb.DepositContainer
 	deposits          []*dbpb.DepositContainer
+	secondaryDeposits []*dbpb.DepositContainer
 	finalizedDeposits *FinalizedDeposits
 	depositsLock      sync.RWMutex
 }
@@ -69,6 +72,7 @@ func New() (*DepositCache, error) {
 	return &DepositCache{
 		pendingDeposits:   []*dbpb.DepositContainer{},
 		deposits:          []*dbpb.DepositContainer{},
+		secondaryDeposits: []*dbpb.DepositContainer{},
 		finalizedDeposits: &FinalizedDeposits{Deposits: finalizedDepositsTrie, MerkleTrieIndex: -1},
 	}, nil
 }
@@ -99,6 +103,32 @@ func (dc *DepositCache) InsertDeposit(ctx context.Context, d *ethpb.Deposit, blo
 		[]*dbpb.DepositContainer{{Deposit: d, Eth1BlockHeight: blockNum, DepositRoot: depositRoot[:], Index: index}},
 		dc.deposits[heightIdx:]...)
 	dc.deposits = append(dc.deposits[:heightIdx], newDeposits...)
+	historicalDepositsCount.Inc()
+	return nil
+}
+
+// InsertSecondaryDeposit into the database. If deposit or block number are nil
+// then this method does nothing.
+func (dc *DepositCache) InsertSecondaryDeposit(ctx context.Context, d *ethpb.Deposit, blockNum uint64, index int64, depositRoot [32]byte) error {
+	ctx, span := trace.StartSpan(ctx, "DepositsCache.InsertSecondaryDeposit")
+	defer span.End()
+	if d == nil {
+		log.WithFields(logrus.Fields{
+			"block":        blockNum,
+			"deposit":      d,
+			"index":        index,
+			"deposit root": hex.EncodeToString(depositRoot[:]),
+		}).Warn("Ignoring nil secondary deposit insertion")
+		return errors.New("nil secondary deposit inserted into the cache")
+	}
+	dc.depositsLock.Lock()
+	defer dc.depositsLock.Unlock()
+
+	if int(index) != len(dc.secondaryDeposits) {
+		return errors.Errorf("wanted secondary deposit with index %d to be inserted but received %d", len(dc.secondaryDeposits), index)
+	}
+	newDeposit := &dbpb.DepositContainer{Deposit: d, Eth1BlockHeight: blockNum, DepositRoot: depositRoot[:], Index: index}
+	dc.secondaryDeposits = append(dc.secondaryDeposits, newDeposit)
 	historicalDepositsCount.Inc()
 	return nil
 }
@@ -243,6 +273,19 @@ func (dc *DepositCache) NonFinalizedDeposits(ctx context.Context, untilBlk *big.
 	}
 
 	return deposits
+}
+
+func (dc *DepositCache) SecondaryDepositByIndex(ctx context.Context, index int64) *ethpb.Deposit {
+	ctx, span := trace.StartSpan(ctx, "DepositsCache.SecondaryDepositByIndex")
+	defer span.End()
+	dc.depositsLock.RLock()
+	defer dc.depositsLock.RUnlock()
+
+	if index >= int64(len(dc.secondaryDeposits)) {
+		return nil
+	}
+	ctnr := dc.secondaryDeposits[index]
+	return ctnr.Deposit
 }
 
 // PruneProofs removes proofs from all deposits whose index is equal or less than untilDepositIndex.

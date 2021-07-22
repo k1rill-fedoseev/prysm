@@ -22,3 +22,18 @@ func UnpackDepositLogData(data []byte) (pubkey, withdrawalCredentials, amount, s
 
 	return unpackedLogs[0].([]byte), unpackedLogs[1].([]byte), unpackedLogs[2].([]byte), unpackedLogs[3].([]byte), unpackedLogs[4].([]byte), nil
 }
+
+func UnpackDepositConfirmationLogData(data []byte) (confirmingIndex, index []byte, err error) {
+	reader := bytes.NewReader([]byte(ExtraDepositContractABI))
+	contractAbi, err := abi.JSON(reader)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "unable to generate contract abi")
+	}
+
+	unpackedLogs, err := contractAbi.Unpack("ConfirmDeposit", data)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "unable to unpack logs")
+	}
+
+	return unpackedLogs[0].([]byte), unpackedLogs[1].([]byte), nil
+}

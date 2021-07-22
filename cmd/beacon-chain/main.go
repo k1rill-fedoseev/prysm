@@ -30,6 +30,7 @@ import (
 
 var appFlags = []cli.Flag{
 	flags.DepositContractFlag,
+	flags.SecondaryDepositContractFlag,
 	flags.HTTPWeb3ProviderFlag,
 	flags.FallbackWeb3ProviderFlag,
 	flags.RPCHost,

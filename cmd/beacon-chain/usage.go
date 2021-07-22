@@ -94,6 +94,7 @@ var appHelpFlagGroups = []flagGroup{
 			flags.InteropMockEth1DataVotesFlag,
 			flags.InteropGenesisStateFlag,
 			flags.DepositContractFlag,
+			flags.SecondaryDepositContractFlag,
 			flags.ContractDeploymentBlock,
 			flags.RPCHost,
 			flags.RPCPort,

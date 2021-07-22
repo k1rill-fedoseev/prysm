@@ -68,6 +68,11 @@ func configureEth1Config(cliCtx *cli.Context) {
 		c.DepositContractAddress = cliCtx.String(flags.DepositContractFlag.Name)
 		params.OverrideBeaconConfig(c)
 	}
+	if cliCtx.IsSet(flags.SecondaryDepositContractFlag.Name) {
+		c := params.BeaconConfig()
+		c.SecondaryDepositContractAddress = cliCtx.String(flags.SecondaryDepositContractFlag.Name)
+		params.OverrideBeaconConfig(c)
+	}
 }
 
 func configureNetwork(cliCtx *cli.Context) {
